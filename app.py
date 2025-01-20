@@ -9,7 +9,7 @@ import threading
 
 import config
 import matplotlib
-matplotlib.use("Agg")  # Evita conflitos de backend no PySimpleGUI
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from io import BytesIO
 
@@ -17,7 +17,10 @@ from utils.dados import (
     carrega_lista_cards,
     salvar_resultados_csv,
     salvar_monitoramento,
-    limpar_csv
+    limpar_csv,
+    buscar_oportunidades,
+    analisar_estoque,
+    gerar_pdf_relatorio
 )
 from utils.scraper import LigaPokemonScraper
 
@@ -30,12 +33,13 @@ class App:
         self.df_cards = pd.DataFrame()
         self.resultados = []
         self.df_monitor = pd.DataFrame()
-
         self.monitor_thread = None
         self.monitor_paused = False
         self.monitor_running = False
         self.monitor_check_count = 0
+        self.resultados_analise = []  # Para armazenar dados a exibir na aba Análise
 
+        # --------------------- Aba 1: Raspagem & Monitoramento ---------------------
         # Seção principal de Cards
         col_cards = [
             [sg.Text("Arquivo de Cartas (nome;colecao;numero):")],
@@ -50,7 +54,6 @@ class App:
             ]
         ]
 
-        # Tabela de Resultados
         col_tabela = [
             [sg.Text("Resultados (Raspagem/Monitoramento):")],
             [sg.Table(values=[],
@@ -59,11 +62,9 @@ class App:
                       auto_size_columns=True,
                       display_row_numbers=True,
                       justification="left",
-                      num_rows=8,
-                      size=(None,8))]
+                      num_rows=8)]
         ]
 
-        # Barra de progresso + Cronômetro
         col_progress = [
             [sg.Text("Progresso:")],
             [sg.ProgressBar(config.PROGRESS_MAX, orientation='h', size=(38, 20), key="-PROGRESS-")],
@@ -85,22 +86,66 @@ class App:
             ]
         ]
 
-        # Gráfico (opcional)
-        col_grafico = [
-            [sg.Button("Gerar Gráfico", key="-GERAR-GRAFICO-", disabled=True)],
-            [sg.Image(key="-GRAFICO-")]
-        ]
-
-        # Layout final
-        layout = [
-            [sg.Frame("Cartas para Raspagem", col_cards), sg.VerticalSeparator(), sg.Frame("Tabela de Resultados", col_tabela)],
+        aba1_layout = [
+            [
+                sg.Frame("Cartas para Raspagem", col_cards),
+                sg.VerticalSeparator(),
+                sg.Frame("Tabela de Resultados", col_tabela)
+            ],
             [sg.HorizontalSeparator()],
-            [sg.Frame("Progresso & Cronômetro", col_progress), sg.VerticalSeparator(), sg.Frame("Monitoramento Contínuo", col_monitor), sg.VerticalSeparator(), sg.Frame("Tendência de Preços", col_grafico)],
-            [sg.Output(size=(120,10), key="-LOGS-")]
+            [
+                sg.Frame("Progresso & Cronômetro", col_progress),
+                sg.VerticalSeparator(),
+                sg.Frame("Monitoramento Contínuo", col_monitor)
+            ],
+            [sg.Multiline(size=(110,8), key="-LOGS-", autoscroll=True, disabled=True)]
         ]
 
-        self.window = sg.Window("Raspagem & Monitor - Completo", layout, finalize=True)
+        # --------------------- Aba 2: Análise ---------------------
+        # Aqui podemos ter uma tabela extra, análises de estoque, oportunidades, e geração de relatório PDF
+        col_analise_tabela = [
+            [sg.Text("Resultados de Análise:")],
+            [sg.Table(values=[],
+                      headings=["Nome","Coleção","Número","Preço", "Outros?"],  # Exemplo
+                      key="-TAB-ANALISE-TABLE-",
+                      auto_size_columns=True,
+                      display_row_numbers=True,
+                      justification="left",
+                      num_rows=8)]
+        ]
 
+        col_analise_botoes = [
+            [sg.Button("Gerar Gráfico Tendência", key="-ANALISE-GRAF-", size=(20,1))],
+            [sg.Button("Analisar Estoque", key="-ANALISE-ESTOQUE-", size=(20,1))],
+            [sg.Button("Buscar Oportunidades", key="-ANALISE-OPORT-", size=(20,1))],
+            [sg.Button("Gerar Relatório PDF", key="-ANALISE-PDF-", size=(20,1))]
+        ]
+        col_analise_result = [
+            [sg.Text("Gráfico ou Mensagens de Análise:")],
+            [sg.Image(key="-ANALISE-GRAFICO-")]
+        ]
+
+        aba2_layout = [
+            [
+                sg.Frame("Tabela de Análise", col_analise_tabela),
+                sg.VerticalSeparator(),
+                sg.Frame("Ações de Análise", col_analise_botoes),
+                sg.VerticalSeparator(),
+                sg.Frame("Resultados Visuais", col_analise_result)
+            ]
+        ]
+
+        # Tabs
+        tabs = [
+            [sg.Tab("Raspagem & Monitoramento", aba1_layout, key="-TAB1-"),
+             sg.Tab("Análise", aba2_layout, key="-TAB2-")]
+        ]
+
+        layout = [
+            [sg.TabGroup(tabs, key="-TABGROUP-")]
+        ]
+
+        self.window = sg.Window("Raspagem & Monitor - Com Abas e Análise", layout, finalize=True)
         self.progress_bar = self.window["-PROGRESS-"]
 
     def run(self):
@@ -109,55 +154,50 @@ class App:
             if event in (sg.WIN_CLOSED, "Exit"):
                 break
 
-            # Carrega CSV de cartas
+            # ------------------------------------------------------------------------------------
+            # ABA 1 - Raspagem & Monitor
+            # ------------------------------------------------------------------------------------
             if event == "-FILE_CARDS-":
                 csv_path = values["-FILE_CARDS-"]
                 if csv_path:
                     self.df_cards = carrega_lista_cards(csv_path, config)
                     if not self.df_cards.empty:
-                        linhas_exibicao = [
-                            f"Nome={row['nome']}, Coleção={row['colecao']}, Número={row['numero']}"
-                            for _, row in self.df_cards.iterrows()
-                        ]
+                        linhas_exibicao = []
+                        for idx, row in self.df_cards.iterrows():
+                            texto = f"Nome={row['nome']}, Coleção={row['colecao']}, Número={row['numero']}"
+                            linhas_exibicao.append(texto)
                         self.window["-LIST_CARDS-"].update(linhas_exibicao)
                         self.window["-BUSCAR-"].update(disabled=False)
 
-            # Botão "Buscar Preços"
             if event == "-BUSCAR-":
                 if self.df_cards.empty:
                     self.log("Nenhum CSV de cartas carregado.")
                 else:
                     self.raspagem_individual()
 
-            # Botão "Limpar Histórico"
             if event == "-LIMPAR-HIST-":
-                # Apaga CSV do SAIDA_CSV e limpa tabela
-                from utils.dados import limpar_csv
                 limpar_csv(config.SAIDA_CSV)
                 self.window["-TABLE-RESULTS-"].update([])
                 self.log("Histórico de raspagem foi removido.")
 
-            # Carrega CSV de monitor
             if event == "-FILE_MONITOR-":
                 csv_path = values["-FILE_MONITOR-"]
                 if csv_path:
                     self.df_monitor = carrega_lista_cards(csv_path, config)
                     if not self.df_monitor.empty:
-                        linhas_exibicao = [
-                            f"Monitor => Nome={row['nome']}, Coleção={row['colecao']}, Número={row['numero']}"
-                            for _, row in self.df_monitor.iterrows()
-                        ]
+                        linhas_exibicao = []
+                        for idx, row in self.df_monitor.iterrows():
+                            texto = f"Monitor => Nome={row['nome']}, Coleção={row['colecao']}, Número={row['numero']}"
+                            linhas_exibicao.append(texto)
                         self.window["-LIST_MONITOR-"].update(linhas_exibicao)
                         self.window["-MONITORAR-"].update(disabled=False)
 
-            # Inicia monitoramento
             if event == "-MONITORAR-":
                 if self.df_monitor.empty:
                     self.log("Nenhum CSV de monitor carregado.")
                 else:
                     self.iniciar_monitoramento()
 
-            # Botão "Pausar/Retomar"
             if event == "-PAUSAR-":
                 self.monitor_paused = not self.monitor_paused
                 if self.monitor_paused:
@@ -167,20 +207,58 @@ class App:
                     self.window["-PAUSAR-"].update("Pausar")
                     self.log("Monitoramento retomado.")
 
-            # Botão "Gerar Gráfico"
-            if event == "-GERAR-GRAFICO-":
-                self.gerar_grafico()
+            # ------------------------------------------------------------------------------------
+            # ABA 2 - Análise
+            # ------------------------------------------------------------------------------------
+            if event == "-ANALISE-GRAF-":
+                self.gerar_grafico_analise()
 
-            # Se o monitor estiver rodando e não estiver pausado, atualizamos cronômetro na interface
-            if self.monitor_running and not self.monitor_paused:
-                self.atualiza_cronometro()
+            if event == "-ANALISE-ESTOQUE-":
+                # Ler do SAIDA_CSV ou do MONITOR_CSV?
+                # Exemplo: usar o SAIDA_CSV
+                df_local = self.carregar_resultados_saidas()
+                if not df_local.empty:
+                    from utils.dados import analisar_estoque
+                    estoque_info = analisar_estoque(df_local)
+                    msg = (f"Estoque Total: {estoque_info.get('total',0)}\n"
+                           f"Estoque Médio: {estoque_info.get('media',0):.1f}\n"
+                           f"Estoque Mín: {estoque_info.get('min',0)}\n"
+                           f"Estoque Máx: {estoque_info.get('max',0)}")
+                    sg.popup("Análise de Estoque", msg)
+                else:
+                    sg.popup("Nenhum dado para analisar estoque.")
+
+            if event == "-ANALISE-OPORT-":
+                # Buscar oportunidades no MONITOR_CSV
+                df_opp = self.carregar_monitor_registros()
+                if df_opp.empty:
+                    sg.popup("Não há registros de monitoramento para analisar.")
+                else:
+                    from utils.dados import buscar_oportunidades
+                    oportunidades = buscar_oportunidades(df_opp, limite_perc=30)
+                    if oportunidades.empty:
+                        sg.popup("Nenhuma oportunidade (abaixo da média) encontrada.")
+                    else:
+                        # Exibir na tabela da aba de análise
+                        self.mostra_analise_tabela(oportunidades)
+
+            if event == "-ANALISE-PDF-":
+                # Gera PDF do monitor ou do SAIDA_CSV
+                df_local = self.carregar_resultados_saidas()
+                if not df_local.empty:
+                    lista = df_local.to_dict(orient="records")
+                    from utils.dados import gerar_pdf_relatorio
+                    gerar_pdf_relatorio("Relatório de Busca/Monitor", lista, "relatorio_analise.pdf")
+                    sg.popup("PDF gerado: relatorio_analise.pdf")
+                else:
+                    sg.popup("Nenhum dado para gerar PDF.")
 
         self.window.close()
 
+    # ------------------------------------------------------------------------------------
+    # Métodos Auxiliares - Raspagem & Monitor
+    # ------------------------------------------------------------------------------------
     def raspagem_individual(self):
-        """
-        Faz raspagem única para as cartas em self.df_cards
-        """
         self.log("[INFO] Iniciando raspagem individual...")
         scraper = LigaPokemonScraper(
             url_base=config.WEBSITE_1,
@@ -192,7 +270,7 @@ class App:
         total = len(self.df_cards)
         for i, row in self.df_cards.iterrows():
             perc = int((i+1)/total * 100)
-            self.progress_bar.Update(perc)
+            self.window["-PROGRESS-"].Update(perc)
 
             nome = row["nome"]
             col = row["colecao"]
@@ -211,7 +289,6 @@ class App:
 
         scraper.fechar_driver()
         if resultados_locais:
-            from utils.dados import salvar_resultados_csv
             salvar_resultados_csv(resultados_locais, config.SAIDA_CSV)
             self.log("Raspagem finalizada. Resultados salvos.")
             self.mostra_resultados_tabela(resultados_locais)
@@ -219,9 +296,6 @@ class App:
             self.log("Nenhum resultado coletado na raspagem individual.")
 
     def iniciar_monitoramento(self):
-        """
-        Cria thread para monitorar as cartas sem travar a UI
-        """
         if self.monitor_running:
             self.log("Monitor já está rodando.")
             return
@@ -235,19 +309,14 @@ class App:
         self.monitor_thread.start()
 
     def loop_monitor(self):
-        """
-        Loop infinito de monitoramento, rodando em thread separada
-        """
         while self.monitor_running:
-            # Se estiver pausado, aguarda um pouco e continua
             if self.monitor_paused:
                 time.sleep(1)
                 continue
 
             self.monitor_check_count += 1
-            self.log(f"[MONITOR] Iniciando checagem #{self.monitor_check_count} ({len(self.df_monitor)} cartas).")
+            self.log(f"[MONITOR] Checagem #{self.monitor_check_count} para {len(self.df_monitor)} cartas.")
 
-            # Faz a raspagem
             scraper = LigaPokemonScraper(
                 url_base=config.WEBSITE_1,
                 debug=config.DEBUG,
@@ -258,7 +327,7 @@ class App:
             results_monitor = []
             for i, row in self.df_monitor.iterrows():
                 perc = int((i+1)/total * 100)
-                self.progress_bar.Update(perc)
+                self.window["-PROGRESS-"].Update(perc)
 
                 nome = row["nome"]
                 col = row["colecao"]
@@ -273,58 +342,109 @@ class App:
                         dt_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         salvar_monitoramento(nome, col, num, preco_atual, dt_str, config.MONITOR_CSV)
                         self.log(f"[MONITOR] {nome} preco {preco_atual}")
-                        # Se quiser, implementar variação de 10% (pode ler preco_inicial do CSV)
                     else:
-                        self.log(f"[MONITOR] NM não encontrado para {nome}.")
+                        self.log(f"[MONITOR] NM não encontrado p/ {nome}.")
                 except Exception as e:
                     self.log(f"[MONITOR] ERRO monitor {nome}: {e}")
 
             scraper.fechar_driver()
 
-            # Atualiza tabela com resultados
             if results_monitor:
                 self.mostra_resultados_tabela(results_monitor)
 
-            # Espera tempo
             tempo_base = config.MONITOR_INTERVALO_BASE
             variacao = config.MONITOR_VARIACAO
             espera = tempo_base + random.randint(0, variacao)
-            # Zerar progresso e mostrar countdown
-            self.progress_bar.Update(0)
+            self.window["-PROGRESS-"].Update(0)
+
             for seg in range(espera):
                 if not self.monitor_running:
                     break
                 if self.monitor_paused:
-                    # Se pausado, congela contagem
                     time.sleep(1)
                     seg -= 1
                     continue
                 restante = espera - seg
-                self.window["-CRONOMETRO-"].update(self.segundos_para_minutos(restante))
+                self.log_cronometro(restante)
                 time.sleep(1)
 
         self.log("[MONITOR] Monitoramento finalizado.")
         self.window["-PAUSAR-"].update(disabled=True)
-        self.window["-CRONOMETRO-"].update("00:00")
+        self.log_cronometro(0)
 
-    def atualiza_cronometro(self):
+    # ------------------------------------------------------------------------------------
+    # Métodos Auxiliares - Análise
+    # ------------------------------------------------------------------------------------
+    def gerar_grafico_analise(self):
         """
-        Caso queira atualizar algo a cada loop do read()...
-        (Não necessariamente precisamos se o countdown está no loop_monitor)
+        Tenta ler SAIDA_CSV e plotar. Exibe na aba "Análise".
         """
-        pass
+        import os
+        from utils.dados import pd
 
-    def parar_monitoramento(self):
-        """
-        Caso queira um botão para parar, podemos usar esse
-        (Não solicitado explicitamente)
-        """
-        self.monitor_running = False
+        if not os.path.exists(config.SAIDA_CSV):
+            sg.popup("Nenhum CSV de resultados para gerar gráfico.")
+            return
 
+        df = pd.read_csv(config.SAIDA_CSV, sep=";", encoding="utf-8-sig")
+        if df.empty or "preco" not in df.columns:
+            sg.popup("CSV vazio ou sem coluna 'preco'.")
+            return
+
+        df["preco"] = df["preco"].astype(float)
+        plt.figure(figsize=(5,3))
+        plt.plot(df["preco"], marker="o", label="Preço")
+        plt.title("Tendência de Preços (Aba Análise)")
+        plt.xlabel("Índice")
+        plt.ylabel("Preço (R$)")
+        plt.legend()
+
+        buf = BytesIO()
+        plt.savefig(buf, format="png")
+        plt.close()
+        self.window["-ANALISE-GRAFICO-"].update(data=buf.getvalue())
+
+    def mostra_analise_tabela(self, df):
+        """
+        Exibe DataFrame 'df' na tabela da aba "Análise" (-TAB-ANALISE-TABLE-)
+        """
+        if df.empty:
+            sg.popup("Nenhum dado para mostrar na tabela de Análise.")
+            return
+        df2 = df.copy()
+        # Converte tudo para string
+        df2 = df2.astype(str)
+        table_values = df2.values.tolist()
+        self.window["-TAB-ANALISE-TABLE-"].update(table_values)
+
+    def carregar_resultados_saidas(self):
+        """
+        Lê SAIDA_CSV e retorna DataFrame
+        """
+        import os
+        from utils.dados import pd
+
+        if not os.path.exists(config.SAIDA_CSV):
+            return pd.DataFrame()
+        df = pd.read_csv(config.SAIDA_CSV, sep=";", encoding="utf-8-sig")
+        return df
+
+    def carregar_monitor_registros(self):
+        """
+        Lê MONITOR_CSV e retorna DataFrame
+        """
+        import os
+        from utils.dados import pd
+
+        if not os.path.exists(config.MONITOR_CSV):
+            return pd.DataFrame()
+        df = pd.read_csv(config.MONITOR_CSV, sep=";", encoding="utf-8-sig")
+        return df
+
+    # ------------------------------------------------------------------------------------
+    # Funções de Interface e Logs
+    # ------------------------------------------------------------------------------------
     def mostra_resultados_tabela(self, lista_resultados):
-        """
-        Preenche a sg.Table com dados
-        """
         table_values = []
         for dic in lista_resultados:
             table_values.append([
@@ -339,52 +459,17 @@ class App:
             ])
         self.window["-TABLE-RESULTS-"].update(table_values)
 
-    def gerar_grafico(self):
-        """
-        Gera um gráfico de exemplo (pode ser o histórico do SAIDA_CSV).
-        """
-        import matplotlib.pyplot as plt
-        from io import BytesIO
-        from utils.dados import pd, os
-
-        if not os.path.exists(config.SAIDA_CSV):
-            sg.popup("Nenhum CSV de resultados para gerar gráfico.")
-            return
-
-        df = pd.read_csv(config.SAIDA_CSV, sep=";", encoding="utf-8-sig")
-        if df.empty:
-            sg.popup("CSV de resultados vazio.")
-            return
-        if "preco" not in df.columns:
-            sg.popup("CSV não contém a coluna 'preco'.")
-            return
-
-        df["preco"] = df["preco"].astype(float)
-        plt.figure(figsize=(5,3))
-        plt.plot(df["preco"], marker="o", label="Preço")
-        plt.title("Tendência de Preços")
-        plt.xlabel("Índice")
-        plt.ylabel("Preço (R$)")
-        plt.legend()
-
-        buf = BytesIO()
-        plt.savefig(buf, format="png")
-        plt.close()
-        self.window["-GRAFICO-"].update(data=buf.getvalue())
+    def log_cronometro(self, s):
+        mm = s // 60
+        ss = s % 60
+        tempo = f"{mm:02}:{ss:02}"
+        self.window["-CRONOMETRO-"].update(tempo)
 
     def log(self, texto):
         """
-        Mostra log no Output
+        Print em -LOGS-
         """
         self.window["-LOGS-"].print(texto)
-
-    def segundos_para_minutos(self, s):
-        """
-        Converte número de segundos em mm:ss
-        """
-        mm = s // 60
-        ss = s % 60
-        return f"{mm:02}:{ss:02}"
 
 def main():
     app = App()
