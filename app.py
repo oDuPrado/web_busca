@@ -3,27 +3,26 @@ import pandas as pd
 import numpy as np
 import random
 import time
-import threading
 from datetime import datetime
 from pathlib import Path
+import threading
+
 import config
 import matplotlib
-matplotlib.use("Agg")  # Para evitar conflitos de backend
+matplotlib.use("Agg")  # Evita conflitos de backend no PySimpleGUI
 import matplotlib.pyplot as plt
 from io import BytesIO
+
 from utils.dados import (
     carrega_lista_cards,
     salvar_resultados_csv,
     salvar_monitoramento,
-    carrega_historico_raspagem
+    limpar_csv
 )
-from utils.scraper import (
-    LigaPokemonScraper
-)
+from utils.scraper import LigaPokemonScraper
 
 class App:
     def __init__(self):
-        # Define o tema inicial
         sg.theme(config.TEMA_INICIAL)
         self.layout_inicial()
 
@@ -31,49 +30,45 @@ class App:
         self.df_cards = pd.DataFrame()
         self.resultados = []
         self.df_monitor = pd.DataFrame()
-        self.monitor_intervalo = 60
 
-        # Seção de tema personalizável
-        col_tema = [
-            [sg.Text("Tema:")],
-            [sg.Combo(sg.theme_list(), default_value=config.TEMA_INICIAL, key="-TEMA-", enable_events=True, size=(20,1))]
-        ]
+        self.monitor_thread = None
+        self.monitor_paused = False
+        self.monitor_running = False
+        self.monitor_check_count = 0
 
-        # Seção para importar cartas
-        col_input_cards = [
+        # Seção principal de Cards
+        col_cards = [
             [sg.Text("Arquivo de Cartas (nome;colecao;numero):")],
             [
                 sg.Input(key="-FILE_CARDS-", enable_events=True, size=(40,1)),
                 sg.FileBrowse("Localizar CSV", file_types=(("CSV Files", "*.csv"),))
             ],
-            [sg.Listbox(values=[], size=(60,8), key="-LIST_CARDS-")],
-            [sg.Button("Buscar Preços", key="-BUSCAR-", size=(12,1), disabled=True)]
+            [sg.Listbox(values=[], size=(60,6), key="-LIST_CARDS-")],
+            [
+                sg.Button("Buscar Preços", key="-BUSCAR-", size=(12,1), disabled=True),
+                sg.Button("Limpar Histórico", key="-LIMPAR-HIST-", size=(14,1))
+            ]
         ]
 
-        # Seção de resultados em tabela
+        # Tabela de Resultados
         col_tabela = [
-            [sg.Text("Resultados da Raspagem / Monitoramento:")],
+            [sg.Text("Resultados (Raspagem/Monitoramento):")],
             [sg.Table(values=[],
-                      headings=["Nome","Colecao","Num","Cond","Qtde","Preço","Total","Língua"],
-                      key="-TABLE-RESULTS-", 
+                      headings=["Nome","Coleção","Número","Cond","Qtde","Preço","Total","Língua"],
+                      key="-TABLE-RESULTS-",
                       auto_size_columns=True,
-                      enable_events=True,
                       display_row_numbers=True,
                       justification="left",
-                      num_rows=10,
-                      size=(None,10))]
+                      num_rows=8,
+                      size=(None,8))]
         ]
 
-        # Barra de progresso
+        # Barra de progresso + Cronômetro
         col_progress = [
-            [sg.Text("Progresso de Busca/Monitoramento:")],
-            [sg.ProgressBar(config.PROGRESS_MAX, orientation='h', size=(40, 20), key="-PROGRESS-")]
-        ]
-
-        # Logs separados
-        col_logs = [
-            [sg.Text("Logs:")],
-            [sg.Multiline(size=(70,15), key="-LOGS-", autoscroll=True, disabled=True)]
+            [sg.Text("Progresso:")],
+            [sg.ProgressBar(config.PROGRESS_MAX, orientation='h', size=(38, 20), key="-PROGRESS-")],
+            [sg.Text("Tempo p/ próxima checagem:", size=(22,1)), sg.Text("00:00", key="-CRONOMETRO-")],
+            [sg.Text("Total de checagens:", size=(22,1)), sg.Text("0", key="-CHECK-COUNT-")]
         ]
 
         # Monitor
@@ -83,93 +78,108 @@ class App:
                 sg.Input(key="-FILE_MONITOR-", enable_events=True, size=(40,1)),
                 sg.FileBrowse("Localizar CSV", file_types=(("CSV Files", "*.csv"),))
             ],
-            [sg.Listbox(values=[], size=(60,8), key="-LIST_MONITOR-")],
-            [sg.Text("Intervalo de Monitor (seg):"), sg.Input(str(config.MONITOR_INTERVALO_BASE), size=(5,1), key="-INTERVALO-")],
-            [sg.Button("Iniciar Monitoramento", key="-MONITORAR-", size=(20,1), disabled=True)]
+            [sg.Listbox(values=[], size=(60,5), key="-LIST_MONITOR-")],
+            [
+                sg.Button("Iniciar Monitoramento", key="-MONITORAR-", size=(18,1), disabled=True),
+                sg.Button("Pausar", key="-PAUSAR-", size=(10,1), disabled=True)
+            ]
         ]
 
-        # Botão para gerar gráfico
-        col_graficos = [
-            [sg.Button("Gerar Gráfico Tendência", key="-GERAR-GRAFICO-", disabled=True)],
+        # Gráfico (opcional)
+        col_grafico = [
+            [sg.Button("Gerar Gráfico", key="-GERAR-GRAFICO-", disabled=True)],
             [sg.Image(key="-GRAFICO-")]
         ]
 
-        # Layout principal
+        # Layout final
         layout = [
-            [sg.Column(col_tema), sg.VerticalSeparator(), sg.Column(col_input_cards)],
+            [sg.Frame("Cartas para Raspagem", col_cards), sg.VerticalSeparator(), sg.Frame("Tabela de Resultados", col_tabela)],
             [sg.HorizontalSeparator()],
-            [sg.Column(col_tabela), sg.VerticalSeparator(), sg.Column(col_progress)],
-            [sg.HorizontalSeparator()],
-            [sg.Column(col_monitor), sg.VerticalSeparator(), sg.Column(col_graficos), sg.VerticalSeparator(), sg.Column(col_logs)]
+            [sg.Frame("Progresso & Cronômetro", col_progress), sg.VerticalSeparator(), sg.Frame("Monitoramento Contínuo", col_monitor), sg.VerticalSeparator(), sg.Frame("Tendência de Preços", col_grafico)],
+            [sg.Output(size=(120,10), key="-LOGS-")]
         ]
-        self.window = sg.Window("App de Raspagem - Liga Pokémon (Completo)", layout, finalize=True)
+
+        self.window = sg.Window("Raspagem & Monitor - Completo", layout, finalize=True)
+
         self.progress_bar = self.window["-PROGRESS-"]
 
     def run(self):
         while True:
-            event, values = self.window.read(timeout=100)
+            event, values = self.window.read(timeout=500)
             if event in (sg.WIN_CLOSED, "Exit"):
                 break
 
-            if event == "-TEMA-":
-                tema_escolhido = values["-TEMA-"]
-                sg.theme(tema_escolhido)
-                # Forçar recriação da janela para aplicar o tema
-                self.window.close()
-                self.layout_inicial()
-                continue
-
+            # Carrega CSV de cartas
             if event == "-FILE_CARDS-":
                 csv_path = values["-FILE_CARDS-"]
                 if csv_path:
                     self.df_cards = carrega_lista_cards(csv_path, config)
                     if not self.df_cards.empty:
-                        linhas_exibicao = []
-                        for idx, row in self.df_cards.iterrows():
-                            texto = f"Nome={row['nome']}, Colecao={row['colecao']}, Numero={row['numero']}"
-                            linhas_exibicao.append(texto)
+                        linhas_exibicao = [
+                            f"Nome={row['nome']}, Coleção={row['colecao']}, Número={row['numero']}"
+                            for _, row in self.df_cards.iterrows()
+                        ]
                         self.window["-LIST_CARDS-"].update(linhas_exibicao)
                         self.window["-BUSCAR-"].update(disabled=False)
 
+            # Botão "Buscar Preços"
             if event == "-BUSCAR-":
                 if self.df_cards.empty:
-                    self.log("[AVISO] Nenhuma carta carregada.")
-                    continue
-                self.raspagem_individual()
+                    self.log("Nenhum CSV de cartas carregado.")
+                else:
+                    self.raspagem_individual()
 
+            # Botão "Limpar Histórico"
+            if event == "-LIMPAR-HIST-":
+                # Apaga CSV do SAIDA_CSV e limpa tabela
+                from utils.dados import limpar_csv
+                limpar_csv(config.SAIDA_CSV)
+                self.window["-TABLE-RESULTS-"].update([])
+                self.log("Histórico de raspagem foi removido.")
+
+            # Carrega CSV de monitor
             if event == "-FILE_MONITOR-":
                 csv_path = values["-FILE_MONITOR-"]
                 if csv_path:
                     self.df_monitor = carrega_lista_cards(csv_path, config)
                     if not self.df_monitor.empty:
-                        linhas_exibicao = []
-                        for idx, row in self.df_monitor.iterrows():
-                            texto = f"Monitor => Nome={row['nome']}, Colecao={row['colecao']}, Numero={row['numero']}"
-                            linhas_exibicao.append(texto)
+                        linhas_exibicao = [
+                            f"Monitor => Nome={row['nome']}, Coleção={row['colecao']}, Número={row['numero']}"
+                            for _, row in self.df_monitor.iterrows()
+                        ]
                         self.window["-LIST_MONITOR-"].update(linhas_exibicao)
                         self.window["-MONITORAR-"].update(disabled=False)
 
+            # Inicia monitoramento
             if event == "-MONITORAR-":
                 if self.df_monitor.empty:
-                    self.log("[AVISO] Nenhuma carta para monitorar.")
-                    continue
-                intervalo_str = values["-INTERVALO-"]
-                try:
-                    self.monitor_intervalo = int(intervalo_str)
-                except:
-                    self.monitor_intervalo = config.MONITOR_INTERVALO_BASE
-                self.monitorar_precos()
+                    self.log("Nenhum CSV de monitor carregado.")
+                else:
+                    self.iniciar_monitoramento()
 
+            # Botão "Pausar/Retomar"
+            if event == "-PAUSAR-":
+                self.monitor_paused = not self.monitor_paused
+                if self.monitor_paused:
+                    self.window["-PAUSAR-"].update("Retomar")
+                    self.log("Monitoramento pausado.")
+                else:
+                    self.window["-PAUSAR-"].update("Pausar")
+                    self.log("Monitoramento retomado.")
+
+            # Botão "Gerar Gráfico"
             if event == "-GERAR-GRAFICO-":
-                # Gera gráfico do histórico
                 self.gerar_grafico()
+
+            # Se o monitor estiver rodando e não estiver pausado, atualizamos cronômetro na interface
+            if self.monitor_running and not self.monitor_paused:
+                self.atualiza_cronometro()
 
         self.window.close()
 
     def raspagem_individual(self):
         """
-        Raspagem única (sem monitoramento)
-        Exibe progresso, resumo e notifica se subir/cair 10%.
+        Faz raspagem única para as cartas em self.df_cards
         """
         self.log("[INFO] Iniciando raspagem individual...")
         scraper = LigaPokemonScraper(
@@ -178,69 +188,66 @@ class App:
             tesseract_cmd=config.TESSERACT_CMD,
             tempo_espera=config.TEMPO_ESPERA
         )
-        self.resultados = []
+        resultados_locais = []
         total = len(self.df_cards)
-        contador = 0
-        precos_anteriores = {}
-
-        for idx, row in self.df_cards.iterrows():
-            contador += 1
-            perc = int((contador / total) * 100)
+        for i, row in self.df_cards.iterrows():
+            perc = int((i+1)/total * 100)
             self.progress_bar.Update(perc)
 
-            nome_carta = row["nome"]
-            colecao = row["colecao"]
-            numero = row["numero"]
-            self.log(f"[INFO] Buscando {nome_carta} (Coleção={colecao}, N°={numero})")
+            nome = row["nome"]
+            col = row["colecao"]
+            num = row["numero"]
+            self.log(f"Buscando {nome} ({col} - {num})...")
 
             try:
-                retorno = scraper.busca_carta_completa(
-                    nome=nome_carta,
-                    colecao=colecao,
-                    numero=numero
-                )
+                retorno = scraper.busca_carta_completa(nome, col, num)
                 if retorno:
-                    # Adiciona ao self.resultados
-                    self.resultados.extend(retorno)
-                    # Notificação de variação de preço em comparação a algo anterior (exemplo hipotético)
-                    # Se a carta já estava em precos_anteriores e agora variou 10%
-                    preco_atual = retorno[0].get("preco", 0.0)
-                    if nome_carta in precos_anteriores:
-                        preco_ant = precos_anteriores[nome_carta]
-                        dif = preco_atual - preco_ant
-                        if preco_ant > 0:
-                            pct = (abs(dif) / preco_ant) * 100
-                            if pct >= 10:
-                                if dif > 0:
-                                    sg.popup(f"Preço de {nome_carta} subiu {pct:.1f}% (de R${preco_ant} para R${preco_atual})!")
-                                else:
-                                    sg.popup(f"Preço de {nome_carta} caiu {pct:.1f}% (de R${preco_ant} para R${preco_atual})!")
-                    precos_anteriores[nome_carta] = preco_atual
+                    resultados_locais.extend(retorno)
+                    self.log(f"Encontrado {len(retorno)} item(ns) NM para {nome}.")
                 else:
-                    self.log("[INFO] Nenhum resultado válido para essa carta.")
+                    self.log(f"Nada encontrado para {nome}.")
             except Exception as e:
-                self.log(f"[ERRO] Falha ao buscar carta: {e}")
+                self.log(f"ERRO ao buscar {nome}: {e}")
 
         scraper.fechar_driver()
-
-        if self.resultados:
-            salvar_resultados_csv(self.resultados, Path(config.SAIDA_CSV))
-            self.log("[INFO] Raspagem finalizada e resultados salvos.")
-            # Mostra na tabela
-            self.mostra_resultados_tabela(self.resultados)
-            # Resumo
-            self.mostra_resumo_buscas(self.resultados)
+        if resultados_locais:
+            from utils.dados import salvar_resultados_csv
+            salvar_resultados_csv(resultados_locais, config.SAIDA_CSV)
+            self.log("Raspagem finalizada. Resultados salvos.")
+            self.mostra_resultados_tabela(resultados_locais)
         else:
-            self.log("[INFO] Nenhum resultado foi coletado.")
+            self.log("Nenhum resultado coletado na raspagem individual.")
 
-    def monitorar_precos(self):
+    def iniciar_monitoramento(self):
         """
-        Monitoramento com controle de intervalo, barra de progresso,
-        logs, notificação de variação de 10%.
+        Cria thread para monitorar as cartas sem travar a UI
         """
-        self.log("[INFO] Iniciando monitoramento contínuo de preços...")
+        if self.monitor_running:
+            self.log("Monitor já está rodando.")
+            return
+        self.monitor_running = True
+        self.monitor_paused = False
+        self.monitor_check_count = 0
+        self.window["-PAUSAR-"].update("Pausar")
+        self.window["-PAUSAR-"].update(disabled=False)
+        self.log("[MONITOR] Iniciando monitoramento em thread.")
+        self.monitor_thread = threading.Thread(target=self.loop_monitor, daemon=True)
+        self.monitor_thread.start()
 
-        while True:
+    def loop_monitor(self):
+        """
+        Loop infinito de monitoramento, rodando em thread separada
+        """
+        while self.monitor_running:
+            # Se estiver pausado, aguarda um pouco e continua
+            if self.monitor_paused:
+                time.sleep(1)
+                continue
+
+            self.monitor_check_count += 1
+            self.log(f"[MONITOR] Iniciando checagem #{self.monitor_check_count} ({len(self.df_monitor)} cartas).")
+
+            # Faz a raspagem
             scraper = LigaPokemonScraper(
                 url_base=config.WEBSITE_1,
                 debug=config.DEBUG,
@@ -248,70 +255,75 @@ class App:
                 tempo_espera=config.TEMPO_ESPERA
             )
             total = len(self.df_monitor)
-            contador = 0
             results_monitor = []
-
-            # Aqui guardamos preços anteriores em dict local (poderia ser em CSV)
-            precos_anteriores = {}
-
-            for idx, row in self.df_monitor.iterrows():
-                contador += 1
-                perc = int((contador / total) * 100)
+            for i, row in self.df_monitor.iterrows():
+                perc = int((i+1)/total * 100)
                 self.progress_bar.Update(perc)
 
-                nome_carta = row["nome"]
-                colecao = row["colecao"]
-                numero = row["numero"]
-                self.log(f"[MONITOR] Conferindo {nome_carta} (Coleção={colecao}, N°={numero})...")
+                nome = row["nome"]
+                col = row["colecao"]
+                num = row["numero"]
+                self.log(f"[MONITOR] Conferindo {nome} ({col} - {num})...")
 
                 try:
-                    retorno = scraper.busca_carta_completa(
-                        nome=nome_carta,
-                        colecao=colecao,
-                        numero=numero
-                    )
+                    retorno = scraper.busca_carta_completa(nome, col, num)
                     if retorno:
-                        item = retorno[0]
-                        preco_atual = item.get("preco", 0.0)
+                        results_monitor.extend(retorno)
+                        preco_atual = retorno[0].get("preco",0.0)
                         dt_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        # Salva no CSV de monitoramento
-                        salvar_monitoramento(nome_carta, colecao, numero, preco_atual, dt_str, config.MONITOR_CSV)
-                        self.log(f"[MONITOR] Preço verificado: R$ {preco_atual}")
-
-                        # Notificar variação de preço
-                        if nome_carta in precos_anteriores:
-                            preco_ant = precos_anteriores[nome_carta]
-                            dif = preco_atual - preco_ant
-                            if preco_ant > 0:
-                                pct = (abs(dif) / preco_ant) * 100
-                                if pct >= 10:
-                                    if dif > 0:
-                                        sg.popup(f"O preço de {nome_carta} subiu {pct:.1f}% (de R${preco_ant} para R${preco_atual}).")
-                                    else:
-                                        sg.popup(f"O preço de {nome_carta} caiu {pct:.1f}% (de R${preco_ant} para R${preco_atual}).")
-                        precos_anteriores[nome_carta] = preco_atual
-                        results_monitor.append(item)
+                        salvar_monitoramento(nome, col, num, preco_atual, dt_str, config.MONITOR_CSV)
+                        self.log(f"[MONITOR] {nome} preco {preco_atual}")
+                        # Se quiser, implementar variação de 10% (pode ler preco_inicial do CSV)
                     else:
-                        self.log("[MONITOR] Não foi encontrado NM para essa carta.")
+                        self.log(f"[MONITOR] NM não encontrado para {nome}.")
                 except Exception as e:
-                    self.log(f"[MONITOR ERRO] Falha ao monitorar {nome_carta}: {e}")
+                    self.log(f"[MONITOR] ERRO monitor {nome}: {e}")
 
             scraper.fechar_driver()
 
-            # Atualiza tabela de resultados monitorados
+            # Atualiza tabela com resultados
             if results_monitor:
                 self.mostra_resultados_tabela(results_monitor)
 
-            # Espera "parecer humano"
-            tempo_base = self.monitor_intervalo
+            # Espera tempo
+            tempo_base = config.MONITOR_INTERVALO_BASE
             variacao = config.MONITOR_VARIACAO
             espera = tempo_base + random.randint(0, variacao)
-            self.log(f"[MONITOR] Aguardando {espera} segundos até a próxima verificação...")
-            time.sleep(espera)
+            # Zerar progresso e mostrar countdown
+            self.progress_bar.Update(0)
+            for seg in range(espera):
+                if not self.monitor_running:
+                    break
+                if self.monitor_paused:
+                    # Se pausado, congela contagem
+                    time.sleep(1)
+                    seg -= 1
+                    continue
+                restante = espera - seg
+                self.window["-CRONOMETRO-"].update(self.segundos_para_minutos(restante))
+                time.sleep(1)
+
+        self.log("[MONITOR] Monitoramento finalizado.")
+        self.window["-PAUSAR-"].update(disabled=True)
+        self.window["-CRONOMETRO-"].update("00:00")
+
+    def atualiza_cronometro(self):
+        """
+        Caso queira atualizar algo a cada loop do read()...
+        (Não necessariamente precisamos se o countdown está no loop_monitor)
+        """
+        pass
+
+    def parar_monitoramento(self):
+        """
+        Caso queira um botão para parar, podemos usar esse
+        (Não solicitado explicitamente)
+        """
+        self.monitor_running = False
 
     def mostra_resultados_tabela(self, lista_resultados):
         """
-        Preenche a sg.Table com dados de 'lista_resultados'
+        Preenche a sg.Table com dados
         """
         table_values = []
         for dic in lista_resultados:
@@ -323,42 +335,37 @@ class App:
                 dic.get("quantidade",0),
                 dic.get("preco",0.0),
                 dic.get("preco_total",0.0),
-                dic.get("lingua",""),
+                dic.get("lingua","")
             ])
         self.window["-TABLE-RESULTS-"].update(table_values)
 
-    def mostra_resumo_buscas(self, lista_resultados):
-        """
-        Exibe um resumo da busca: número de cartas, preço médio, menor preço
-        """
-        if not lista_resultados:
-            return
-        precos = [r.get("preco",0.0) for r in lista_resultados if r.get("preco",0.0) > 0]
-        if not precos:
-            return
-        n = len(precos)
-        menor = min(precos)
-        maior = max(precos)
-        media = sum(precos)/n
-        self.log(f"[RESUMO] Total de cartas: {n}, Menor Preço: {menor}, Maior Preço: {maior}, Preço Médio: {media:.2f}")
-
     def gerar_grafico(self):
         """
-        Lê o CSV de resultados, filtra por uma carta e plota a variação de preços ao longo do tempo.
-        EXEMPLO SIMPLES: plota algo genérico.
+        Gera um gráfico de exemplo (pode ser o histórico do SAIDA_CSV).
         """
-        df_hist = carrega_historico_raspagem(config.SAIDA_CSV)
-        if df_hist.empty:
-            sg.popup("Nenhum histórico encontrado para gerar gráfico.")
+        import matplotlib.pyplot as plt
+        from io import BytesIO
+        from utils.dados import pd, os
+
+        if not os.path.exists(config.SAIDA_CSV):
+            sg.popup("Nenhum CSV de resultados para gerar gráfico.")
             return
 
-        # Exemplo: gera gráfico da coluna 'preco'
-        df_hist["preco"] = df_hist["preco"].astype(float)
+        df = pd.read_csv(config.SAIDA_CSV, sep=";", encoding="utf-8-sig")
+        if df.empty:
+            sg.popup("CSV de resultados vazio.")
+            return
+        if "preco" not in df.columns:
+            sg.popup("CSV não contém a coluna 'preco'.")
+            return
+
+        df["preco"] = df["preco"].astype(float)
         plt.figure(figsize=(5,3))
-        plt.plot(df_hist["preco"], marker="o")
-        plt.title("Histórico de Preços (Exemplo)")
-        plt.xlabel("Índice (Busca)")
+        plt.plot(df["preco"], marker="o", label="Preço")
+        plt.title("Tendência de Preços")
+        plt.xlabel("Índice")
         plt.ylabel("Preço (R$)")
+        plt.legend()
 
         buf = BytesIO()
         plt.savefig(buf, format="png")
@@ -367,12 +374,19 @@ class App:
 
     def log(self, texto):
         """
-        Escreve uma linha de log na Multiline.
+        Mostra log no Output
         """
-        self.window["-LOGS-"].print(texto, end="")
+        self.window["-LOGS-"].print(texto)
+
+    def segundos_para_minutos(self, s):
+        """
+        Converte número de segundos em mm:ss
+        """
+        mm = s // 60
+        ss = s % 60
+        return f"{mm:02}:{ss:02}"
 
 def main():
-    sg.theme(config.TEMA_INICIAL)
     app = App()
     app.run()
 

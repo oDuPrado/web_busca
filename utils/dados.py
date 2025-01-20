@@ -4,6 +4,9 @@ import os
 from datetime import datetime
 
 def carrega_lista_cards(caminho_csv, config):
+    """
+    Lê um CSV contendo colunas: nome; colecao; numero
+    """
     try:
         sep = ";"
         with open(caminho_csv, "r", encoding="utf-8") as f:
@@ -34,6 +37,9 @@ def carrega_lista_cards(caminho_csv, config):
         return pd.DataFrame()
 
 def salvar_resultados_csv(lista_dicionarios, caminho_saida):
+    """
+    Espera colunas: nome, colecao, numero, condicao, quantidade, preco, preco_total, lingua
+    """
     if not lista_dicionarios:
         print("[AVISO] Nenhum resultado para salvar.")
         return
@@ -62,62 +68,61 @@ def salvar_resultados_csv(lista_dicionarios, caminho_saida):
     print(f"[INFO] CSV salvo em: {caminho_saida}")
 
 def salvar_monitoramento(nome, colecao, numero, preco, data, caminho):
+    """
+    Formato: nome;colecao;numero;preco_atual;data_atual;preco_inicial;data_inicial
+    """
     colunas = ["nome","colecao","numero","preco_atual","data_atual","preco_inicial","data_inicial"]
     existe = os.path.exists(caminho)
     modo = "a" if existe else "w"
 
-    import pandas as pd
-
     df_existente = pd.DataFrame()
-    if os.path.exists(caminho):
+    if existe:
         df_existente = pd.read_csv(caminho, sep=";", dtype=str, encoding="utf-8-sig")
 
-    mask = None
+    preco_float = float(preco) if preco else 0.0
+
     if not df_existente.empty:
         mask = (
             (df_existente["nome"] == nome) &
             (df_existente["colecao"] == colecao) &
             (df_existente["numero"] == numero)
         )
-    else:
-        mask = pd.Series([False])
+        if mask.any():
+            idx = df_existente[mask].index[0]
+            preco_inicial_str = df_existente.loc[idx, "preco_inicial"]
+            preco_inicial_float = float(preco_inicial_str) if preco_inicial_str else 0.0
+            if preco_inicial_float == 0:
+                df_existente.loc[idx, "preco_inicial"] = str(preco_float)
+                df_existente.loc[idx, "data_inicial"] = data
+            df_existente.loc[idx, "preco_atual"] = str(preco_float)
+            df_existente.loc[idx, "data_atual"] = data
+            df_existente.to_csv(caminho, sep=";", index=False, encoding="utf-8-sig")
+            print(f"[INFO] Monitoramento atualizado para {nome} ({colecao} - {numero}): R$ {preco_float}")
+            return
+    # Caso contrário, adiciona linha
+    import csv
+    with open(caminho, modo, newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=colunas, delimiter=";")
+        if modo == "w":
+            writer.writeheader()
+        linha = {
+            "nome": nome,
+            "colecao": colecao,
+            "numero": numero,
+            "preco_atual": str(preco_float),
+            "data_atual": data,
+            "preco_inicial": str(preco_float),
+            "data_inicial": data
+        }
+        writer.writerow(linha)
+    print(f"[INFO] Monitoramento salvo para {nome} ({colecao} - {numero}): R$ {preco_float}")
 
-    preco_float = float(preco) if preco else 0.0
-
-    if mask.any():
-        idx = df_existente[mask].index[0]
-        preco_inicial_str = df_existente.loc[idx, "preco_inicial"]
-        preco_inicial_float = float(preco_inicial_str) if preco_inicial_str else 0.0
-        if preco_inicial_float == 0:
-            df_existente.loc[idx, "preco_inicial"] = str(preco_float)
-            df_existente.loc[idx, "data_inicial"] = data
-        df_existente.loc[idx, "preco_atual"] = str(preco_float)
-        df_existente.loc[idx, "data_atual"] = data
-        df_existente.to_csv(caminho, sep=";", index=False, encoding="utf-8-sig")
-    else:
-        with open(caminho, modo, newline="", encoding="utf-8-sig") as f:
-            writer = csv.DictWriter(f, fieldnames=colunas, delimiter=";")
-            if modo == "w":
-                writer.writeheader()
-
-            linha = {
-                "nome": nome,
-                "colecao": colecao,
-                "numero": numero,
-                "preco_atual": str(preco_float),
-                "data_atual": data,
-                "preco_inicial": str(preco_float),
-                "data_inicial": data
-            }
-            writer.writerow(linha)
-
-    print(f"[INFO] Monitoramento salvo/atualizado para {nome} ({colecao} - {numero}): R$ {preco_float} em {data}")
-
-def carrega_historico_raspagem(path):
+def limpar_csv(caminho):
     """
-    Lê o arquivo de resultados e retorna um DataFrame para plotar gráficos.
+    Apaga o arquivo CSV se existir.
     """
-    if not os.path.exists(path):
-        return pd.DataFrame()
-    df = pd.read_csv(path, sep=";", encoding="utf-8-sig")
-    return df
+    if os.path.exists(caminho):
+        os.remove(caminho)
+        print(f"[INFO] CSV {caminho} foi removido.")
+    else:
+        print(f"[INFO] CSV {caminho} não existe para ser removido.")
