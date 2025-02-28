@@ -1,5 +1,3 @@
-import numpy as np
-
 TESSERACT_CMD = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 WEBSITE_1 = "https://www.ligapokemon.com.br/"
 TIMEOUT_BUSCA_PRINCIPAL = 10
@@ -19,13 +17,13 @@ MONITOR_CSV = "monitor_registros.csv"
 MONITOR_INTERVALO_BASE = 60
 MONITOR_VARIACAO = 30
 
-# Intervalo padrão para raspagem e monitoramento, se quiser exibir numa barra
+# Intervalo padrão para raspagem e monitoramento
 PROGRESS_MAX = 100
 
-# Tema inicial do PySimpleGUI (pode trocar por "DarkAmber", "LightBlue2", etc.)
+# Tema inicial (não se aplica diretamente no PyQt, mas deixo como referência)
 TEMA_INICIAL = "DarkBlue"
 
-# Parâmetros para possíveis dicionários
+# Dicionários (caso precise no futuro)
 DICT_LINGUA = {}
 DICT_CONDICAO = {}
 DICT_EXTRAS = {}
