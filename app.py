@@ -1,3 +1,107 @@
+# --------------------------------------------------------------------------------
+# Crhome driver 
+# --------------------------------------------------------------------------------
+
+import os
+import platform
+import zipfile
+import requests
+import shutil
+import sys 
+
+def get_chromedriver_path():
+    """Retorna o caminho correto do ChromeDriver dentro da pasta do executável."""
+    base_path = getattr(sys, '_MEIPASS', os.path.abspath("."))  # Suporte ao PyInstaller
+    return os.path.join(base_path, "chromedriver.exe")
+
+def get_latest_chromedriver_version():
+    """Obtém a versão mais recente do ChromeDriver disponível."""
+    url = "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json"
+    response = requests.get(url)
+    if response.status_code != 200:
+        print("[ERRO] Falha ao obter a versão mais recente do ChromeDriver.")
+        return None
+    data = response.json()
+    return data.get("channels", {}).get("Stable", {}).get("version", None)
+
+def download_chromedriver():
+    """Baixa e extrai a versão correta do ChromeDriver automaticamente e move para o diretório correto."""
+    latest_version = get_latest_chromedriver_version()
+    if not latest_version:
+        print("[ERRO] Não foi possível obter a versão mais recente do ChromeDriver.")
+        return None
+
+    system_os = platform.system().lower()
+    download_urls = {
+        "windows": f"https://storage.googleapis.com/chrome-for-testing-public/{latest_version}/win64/chromedriver-win64.zip",
+        "linux": f"https://storage.googleapis.com/chrome-for-testing-public/{latest_version}/linux64/chromedriver-linux64.zip",
+        "darwin": f"https://storage.googleapis.com/chrome-for-testing-public/{latest_version}/mac-x64/chromedriver-mac-x64.zip"
+    }
+
+    if system_os not in download_urls:
+        print("[ERRO] Sistema operacional não suportado!")
+        return None
+
+    url = download_urls[system_os]
+    zip_path = os.path.join(os.getcwd(), "chromedriver.zip")
+    extract_path = os.path.join(os.getcwd(), "chromedriver_temp")
+
+    print(f"Baixando ChromeDriver versão {latest_version} de {url}...")
+    response = requests.get(url, stream=True)
+    if response.status_code != 200:
+        print(f"[ERRO] Falha no download: {response.status_code}")
+        return None
+
+    with open(zip_path, "wb") as file:
+        for chunk in response.iter_content(chunk_size=8192):
+            file.write(chunk)
+
+    # Verifica se o arquivo baixado é um ZIP válido
+    if not zipfile.is_zipfile(zip_path):
+        print("[ERRO] O arquivo baixado não é um ZIP válido. Possível erro na URL.")
+        os.remove(zip_path)
+        return None
+
+    # Extrai o conteúdo
+    with zipfile.ZipFile(zip_path, "r") as zip_ref:
+        zip_ref.extractall(extract_path)
+
+    os.remove(zip_path)  # Remove o ZIP baixado
+
+    # Encontra o caminho correto dentro da pasta extraída
+    chromedriver_filename = "chromedriver.exe" if system_os == "windows" else "chromedriver"
+    extracted_driver_path = os.path.join(extract_path, "chromedriver-win64", chromedriver_filename) if system_os == "windows" else os.path.join(extract_path, chromedriver_filename)
+    final_path = os.path.join(os.getcwd(), chromedriver_filename)  # Caminho onde queremos mover o ChromeDriver
+
+    if not os.path.exists(extracted_driver_path):
+        print("[ERRO] ChromeDriver não encontrado após extração.")
+        return None
+
+    # Move o ChromeDriver para o diretório raiz do projeto
+    shutil.move(extracted_driver_path, final_path)
+    shutil.rmtree(extract_path)  # Remove a pasta temporária
+
+    # Torna executável (necessário para Linux/macOS)
+    if system_os in ["linux", "darwin"]:
+        os.chmod(final_path, 0o755)
+
+    print(f"ChromeDriver pronto para uso em: {final_path}")
+    return final_path
+
+# Verifica se o ChromeDriver já está no local esperado
+chromedriver_path = get_chromedriver_path()
+if not os.path.exists(chromedriver_path):
+    chromedriver_path = download_chromedriver()
+
+if not chromedriver_path or not os.path.exists(chromedriver_path):
+    print("[ERRO] Falha ao obter o ChromeDriver corretamente.")
+else:
+    print(f"[INFO] ChromeDriver pronto para uso: {chromedriver_path}")
+
+# --------------------------------------------------------------------------------
+# IMPORTS
+# --------------------------------------------------------------------------------
+
 import sys
 import os
 import time
@@ -233,7 +337,7 @@ def gerar_pdf_relatorio(titulo, lista_dados, nome_pdf="relatorio.pdf"):
     can.save()
     print(f"[INFO] PDF '{nome_pdf}' gerado com sucesso.")
 
-def gerar_pdf_relatorio_orcamento(titulo, lista_dados, nome_pdf="orcamento.pdf"):
+def gerar_pdf_relatorio_orcamento(titulo, lista_dados, nome_pdf="orcamento.pdf", global_discount=50):
     doc = SimpleDocTemplate(nome_pdf, pagesize=A4)
     story = []
 
@@ -244,7 +348,7 @@ def gerar_pdf_relatorio_orcamento(titulo, lista_dados, nome_pdf="orcamento.pdf")
     story.append(Paragraph(titulo, style_title))
     story.append(Spacer(1, 12))
 
-    cabecalho = ["Nome", "Coleção", "Número", "Preço Unit (R$)", "Quantidade", "Desconto (%)", "Preço Final (R$)"]
+    cabecalho = ["Nome", "Coleção", "Número", "Preço Unit (R$)", "Quantidade", "Compra (%)", "Preço Final (R$)"]
     dados_tabela = []
     dados_tabela.append(cabecalho)
 
@@ -257,7 +361,13 @@ def gerar_pdf_relatorio_orcamento(titulo, lista_dados, nome_pdf="orcamento.pdf")
         numero = str(item.get("numero", ""))
         preco_unit = float(item.get("preco_unit", 0.0))
         quantidade = int(item.get("quantidade", 0))
-        desconto_perc = float(item.get("desconto_perc", 0.0))
+        
+        desconto_raw = item.get("desconto_perc")
+        if not desconto_raw or float(desconto_raw) == 0:
+            desconto_perc = float(global_discount)
+        else:
+            desconto_perc = float(desconto_raw)
+        
         preco_final = float(item.get("preco_final", 0.0))
 
         valor_original = preco_unit * quantidade
@@ -282,15 +392,15 @@ def gerar_pdf_relatorio_orcamento(titulo, lista_dados, nome_pdf="orcamento.pdf")
         "", "", "", "", "", "Final:", f"{total_final:.2f}"
     ])
 
-    tabela = Table(dados_tabela, colWidths=[80,80,60,80,60,70,80])
+    tabela = Table(dados_tabela, colWidths=[80, 80, 60, 80, 60, 70, 80])
     tabela_style = TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.darkgray),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
         ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-        ('ALIGN', (3,1), (3,-1), 'RIGHT'),
-        ('ALIGN', (4,1), (4,-1), 'RIGHT'),
-        ('ALIGN', (5,1), (5,-1), 'RIGHT'),
-        ('ALIGN', (6,1), (6,-1), 'RIGHT'),
+        ('ALIGN', (3, 1), (3, -1), 'RIGHT'),
+        ('ALIGN', (4, 1), (4, -1), 'RIGHT'),
+        ('ALIGN', (5, 1), (5, -1), 'RIGHT'),
+        ('ALIGN', (6, 1), (6, -1), 'RIGHT'),
         ('BACKGROUND', (0, -2), (5, -1), colors.whitesmoke),
         ('SPAN', (0, -2), (4, -2)),
         ('SPAN', (0, -1), (4, -1)),
@@ -302,7 +412,6 @@ def gerar_pdf_relatorio_orcamento(titulo, lista_dados, nome_pdf="orcamento.pdf")
     story.append(tabela)
     story.append(Spacer(1, 12))
     doc.build(story)
-
     print(f"[INFO] PDF '{nome_pdf}' gerado com estilo de tabela para Orçamento.")
 
 def gerar_excel_orcamento(titulo, lista_dados, nome_excel, _percentual_desconto):
@@ -1647,7 +1756,7 @@ class AppWindow(QMainWindow):
             dados_orc.append(dic_item)
 
         pdf_path = os.path.join(config.OUTPUT_FOLDER, "orcamento.pdf")
-        gerar_pdf_relatorio_orcamento("Orçamento de Cartas (Estilizado)", dados_orc, pdf_path)
+        gerar_pdf_relatorio_orcamento("Orçamento de Cartas", dados_orc, pdf_path)
 
         excel_path = os.path.join(config.OUTPUT_FOLDER, "orcamento.xlsx")
         gerar_excel_orcamento("Orçamento de Cartas", dados_orc, excel_path, 0)
