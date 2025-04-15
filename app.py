@@ -655,9 +655,43 @@ class LigaPokemonScraper:
         try:
             botao_remover = row.find_element(By.CSS_SELECTOR, "div.btn-circle.remove.delete.item-delete")
             botao_remover.click()
-            time.sleep(1)
+            time.sleep(1)  # Aguarda um curto período para o alerta aparecer
+
+            # Tenta lidar com o alerta JavaScript da página
+            try:
+                alert = self.driver.switch_to.alert  # Muda o foco para o alerta
+                alert.accept()  # Confirma (clica em "OK")
+                time.sleep(1)  # Dá um tempo para a página atualizar
+                print("[INFO] Alerta de remoção fechado com sucesso.")
+            except NoAlertPresentException:
+                print("[INFO] Nenhum alerta encontrado após remover item do carrinho.")
+
         except NoSuchElementException:
-            pass
+            print("[ERRO] Botão de remover item do carrinho não encontrado.")
+            
+    def limpar_carrinho_completo(self):
+        try:
+            self.abre_modal_carrinho()
+            itens_container = self.driver.find_element(By.CSS_SELECTOR, "div.itens")
+            rows = itens_container.find_elements(By.CSS_SELECTOR, "div.row")
+
+            for row in rows:
+                try:
+                    botao_remover = row.find_element(By.CSS_SELECTOR, "div.btn-circle.remove.delete.item-delete")
+                    botao_remover.click()
+                    time.sleep(1)
+                    try:
+                        alert = self.driver.switch_to.alert
+                        alert.accept()
+                        time.sleep(1)
+                    except NoAlertPresentException:
+                        pass
+                except NoSuchElementException:
+                    continue
+            print("[INFO] Carrinho limpo com sucesso.")
+        except Exception as e:
+            print(f"[ERRO] Falha ao limpar carrinho: {e}")
+
 
     def converte_preco_para_float(self, texto_preco):
         valor = texto_preco.replace("R$", "").replace(".", "").replace(",", ".").strip()
@@ -1413,6 +1447,16 @@ class AppWindow(QMainWindow):
         resultados_locais = []
         total = len(self.df_cards)
 
+        # 🔁 Cria o driver uma vez só
+        scraper = LigaPokemonScraper(
+            url_base=config.WEBSITE_1,
+            debug=config.DEBUG,
+            tesseract_cmd=config.TESSERACT_CMD,
+            tempo_espera=config.TEMPO_ESPERA
+        )
+        
+        scraper.limpar_carrinho_completo()
+
         for i, row in self.df_cards.iterrows():
             perc = int((i + 1) / total * 100)
             self.update_progress(perc)
@@ -1422,12 +1466,6 @@ class AppWindow(QMainWindow):
             self.log(f"Buscando {nome} ({colecao} - {numero})...")
 
             try:
-                scraper = LigaPokemonScraper(
-                    url_base=config.WEBSITE_1,
-                    debug=config.DEBUG,
-                    tesseract_cmd=config.TESSERACT_CMD,
-                    tempo_espera=config.TEMPO_ESPERA
-                )
                 retorno = scraper.busca_carta_completa(nome, colecao, numero)
                 if retorno:
                     resultados_locais.extend(retorno)
@@ -1436,6 +1474,10 @@ class AppWindow(QMainWindow):
                     self.log(f"Nada encontrado para {nome}.")
             except Exception as e:
                 self.log(f"ERRO ao buscar {nome}: {e}")
+
+        # 🔚 Fecha o driver no final
+        scraper.limpar_carrinho_completo()
+        scraper.fechar_driver()
 
         if resultados_locais:
             csv_path = os.path.join(config.OUTPUT_FOLDER, config.SAIDA_CSV)
