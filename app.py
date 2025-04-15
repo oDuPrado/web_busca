@@ -118,7 +118,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QListWidget, QTableWidget, QTableWidgetItem, QProgressBar,
     QFileDialog, QTextEdit, QSpinBox, QSlider, QAbstractItemView,
-    QScrollArea, QGridLayout, QFrame, QToolTip, QToolButton
+    QScrollArea, QGridLayout, QFrame, QToolTip, QToolButton, QComboBox
 )
 from PyQt5.QtCore import (
     Qt, QTimer, pyqtSignal, QObject, QSize, QPropertyAnimation,
@@ -714,6 +714,13 @@ class AppWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Ho Hub - Scrapper")
         self.setGeometry(50, 50, 1300, 800)
+        
+        # Controle de paginação (Scroll Infinito)
+        self.cards_offset = 0
+        self.cards_query = ""
+        self.cards_loading = False
+        self.cards_page_size = 30
+        self.cards_has_more = True
 
         # Controle de dados
         self.df_cards = pd.DataFrame()
@@ -833,8 +840,28 @@ class AppWindow(QMainWindow):
         row_search.addWidget(self.input_search_card)
         row_search.addWidget(botao_search_card)
         layout.addLayout(row_search)
+        
+        # Adiciona o dropdown para filtrar por Coleção
+        row_filter = QHBoxLayout()
+        label_filter = QLabel("Filtrar por Coleção:")
+        self.combo_collections = QComboBox()
+        # Adiciona uma opção padrão ("Todas")
+        self.combo_collections.addItem("Todas as Coleções", "")
 
-        # ScrollArea + Grid para mosaico
+        # Chama o método que carrega as coleções via API
+        self.load_collections()
+        row_filter.addWidget(label_filter)
+        row_filter.addWidget(self.combo_collections)
+        row_filter.addStretch()
+        layout.addLayout(row_filter)
+
+
+        # Container externo com tamanho fixo para scroll de cartas
+        scroll_container = QWidget()
+        scroll_container.setMinimumHeight(550)  # Aumente conforme quiser
+        scroll_container.setMaximumHeight(700)
+
+        scroll_layout = QVBoxLayout(scroll_container)
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_content = QWidget()
@@ -842,7 +869,11 @@ class AppWindow(QMainWindow):
         self.scroll_content.setLayout(self.grid_mosaico)
         self.scroll_area.setWidget(self.scroll_content)
 
-        layout.addWidget(self.scroll_area)
+        scroll_layout.addWidget(self.scroll_area)
+        layout.addWidget(scroll_container)
+        
+        # Conecta evento de scroll para detectar final da rolagem
+        self.scroll_area.verticalScrollBar().valueChanged.connect(self.on_scroll_cards)
 
         # Lista de cartas selecionadas
         self.selected_cards = []
@@ -1252,10 +1283,14 @@ class AppWindow(QMainWindow):
 
     def on_search_cards_api(self):
         query = self.input_search_card.text().strip()
-        if not query:
+        # Pega o valor selecionado no combo (a ID da coleção ou vazio)
+        collection_filter = self.combo_collections.currentData()
+
+        if not query and not collection_filter:
             self.log("Por favor, digite algo para pesquisar (aba Cartas).")
             return
 
+        # Limpa o grid e reinicia a busca
         for i in reversed(range(self.grid_mosaico.count())):
             item_grid = self.grid_mosaico.itemAt(i)
             if item_grid:
@@ -1263,7 +1298,62 @@ class AppWindow(QMainWindow):
                 if widget:
                     widget.deleteLater()
 
-        self.search_and_display_cards(query)
+        # Se houver filtro de coleção, adiciona ele na query
+        if collection_filter:
+            # Se tiver também um nome, faz AND; senão busca só pela coleção
+            if query:
+                filtro = f'set.id:"{collection_filter}" AND name:"{query}"'
+            else:
+                filtro = f'set.id:"{collection_filter}"'
+        else:
+            filtro = f'name:"{query}"'
+
+        # Armazena a query para paginação (se estiver usando scroll infinito)
+        self.cards_query = filtro
+        self.current_page = 1
+        self.cards_loaded = []
+        self.is_loading_more = False
+        self.cards_has_more = True
+
+        self.load_cards_page(filtro, offset=0)
+
+        
+    def load_collections(self):
+        try:
+            resp = requests.get("https://api.pokemontcg.io/v2/sets")
+            data = resp.json()
+            sets_list = data.get("data", [])
+            for s in sets_list:
+                # Adiciona cada coleção ao combo. Use "name" para exibição e "id" para o filtro.
+                self.combo_collections.addItem(s.get("name", "Sem Nome"), s.get("id", ""))
+        except Exception as e:
+            self.log(f"Erro ao carregar coleções: {e}")
+
+    def on_scroll_cards(self):
+        scroll_bar = self.scroll_area.verticalScrollBar()
+        if scroll_bar.value() == scroll_bar.maximum() and not self.cards_loading and self.cards_has_more:
+            self.cards_offset += self.cards_page_size
+            self.load_cards_page(self.cards_query, self.cards_offset)
+            
+    def load_cards_page(self, filtro, offset=0):
+        self.cards_loading = True
+        try:
+            self.log(f"[LOTE] Buscando cartas com filtro '{filtro}': offset {offset}")
+            # Calcula a página: offset / pageSize + 1
+            page = int(offset / self.cards_page_size) + 1
+            url = f"https://api.pokemontcg.io/v2/cards?q={filtro}&orderBy=-set.releaseDate&page={page}&pageSize={self.cards_page_size}"
+            resp = requests.get(url)
+            data = resp.json()
+            cards_found = data.get("data", [])
+            self.cards_has_more = len(cards_found) == self.cards_page_size
+            self.display_cards_mosaic(cards_found)
+        except Exception as e:
+            self.log(f"[ERRO] Falha na busca por lote: {e}")
+            self.cards_has_more = False
+        finally:
+            self.cards_loading = False
+
+
 
     def search_and_display_cards(self, query):
         try:
@@ -1325,7 +1415,7 @@ class AppWindow(QMainWindow):
 
         row = 0
         col = 0
-        max_cols = 4
+        max_cols = 3
 
         for card in cards_list:
             frame_card = QFrame()
@@ -1344,7 +1434,26 @@ class AppWindow(QMainWindow):
                     pass
             label_img = QLabel()
             if pix:
-                label_img.setPixmap(pix.scaled(QSize(120, 200), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                label_img.setPixmap(pix.scaled(QSize(240, 340), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                
+                frame_card.setStyleSheet("""
+                QFrame {
+                    background-color: #2c2c2c;
+                    border: 2px solid #555;
+                    border-radius: 12px;
+                    padding: 16px;
+                    margin: 12px;
+                }
+                QPushButton {
+                    background-color: #3a3a3a;
+                    border: 1px solid #666;
+                    border-radius: 6px;
+                    padding: 6px;
+                }
+                QPushButton:hover {
+                    background-color: #555555;
+                }
+            """)
 
             layout_vertical.addWidget(label_img, alignment=Qt.AlignCenter)
 
@@ -1360,6 +1469,29 @@ class AppWindow(QMainWindow):
             lbl_card_set = QLabel(f"{set_name} - {card_number}")
             lbl_card_set.setAlignment(Qt.AlignCenter)
             layout_vertical.addWidget(lbl_card_set)
+            
+            # Pega o preço da API (tcgplayer) de forma dinâmica
+            preco_api = None
+            prices_data = card.get("tcgplayer", {}).get("prices", {})
+
+            for tipo_preco in ["normal", "holofoil", "reverseHolofoil", "1stEditionNormal", "1stEditionHolofoil"]:
+                if tipo_preco in prices_data:
+                    preco_api = prices_data[tipo_preco].get("market")
+                    if preco_api:
+                        break
+
+            if preco_api:
+                # Conversão para Real (você pode depois puxar via API)
+                cotacao_dolar = 5.0  # fixa por enquanto
+                preco_convertido = preco_api * cotacao_dolar
+
+                lbl_preco = QLabel(f"Preço médio: ${preco_api:.2f} / R$ {preco_convertido:.2f}")
+            else:
+                lbl_preco = QLabel("Preço médio: Indisponível")
+
+            lbl_preco.setAlignment(Qt.AlignCenter)
+            layout_vertical.addWidget(lbl_preco)
+
 
             btn_add = QPushButton("Adicionar")
             btn_add.setIcon(self.style().standardIcon(QStyle.SP_ArrowRight))
