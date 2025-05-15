@@ -120,11 +120,11 @@ from PyQt5.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QListWidget, QTableWidget, QTableWidgetItem, QProgressBar,
     QFileDialog, QTextEdit, QSpinBox, QSlider, QAbstractItemView,
-    QScrollArea, QGridLayout, QFrame, QToolTip, QToolButton, QComboBox,QHeaderView,QMessageBox
+    QScrollArea, QGridLayout, QFrame, QToolTip, QToolButton, QComboBox,QHeaderView,QMessageBox,QGraphicsColorizeEffect
 )
 from PyQt5.QtCore import (
     Qt, QTimer, pyqtSignal, QObject, QSize, QPropertyAnimation,
-    QPoint
+    QPoint, QPropertyAnimation, QRect,QEasingCurve
 )
 from PyQt5.QtGui import QPixmap, QIcon
 from selenium.common.exceptions import NoAlertPresentException
@@ -736,7 +736,7 @@ class LogEmitter(QObject):
 class AppWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Ho Hub - Scrapper")
+        self.setWindowTitle("HoRadar")
         self.setGeometry(50, 50, 1300, 800)
         
         # Controle de paginação (Scroll Infinito)
@@ -775,6 +775,20 @@ class AppWindow(QMainWindow):
         # ---------- CRIAÇÃO DAS ABAS ----------
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
+        
+        # Ajustes para evitar corte nos nomes das abas
+        self.tabs.setTabBarAutoHide(False)
+        self.tabs.setUsesScrollButtons(True)
+        self.tabs.setElideMode(Qt.ElideNone)
+
+        # Estilo visual das abas
+        self.tabs.setStyleSheet("""
+            QTabBar::tab {
+                min-width: 120px;
+                padding: 8px;
+                font-size: 12pt;
+            }
+""")
 
         # Criamos as abas na ordem solicitada:
         # 1) Cartas
@@ -786,7 +800,7 @@ class AppWindow(QMainWindow):
         self.tabs.addTab(self.tab_cartas, "Cartas")
 
         self.tab_rasp_monitor = QWidget()
-        self.tabs.addTab(self.tab_rasp_monitor, "Scrapper")
+        self.tabs.addTab(self.tab_rasp_monitor, "Radar")
 
         self.tab_analise = QWidget()
         self.tabs.addTab(self.tab_analise, "Análise")
@@ -913,17 +927,27 @@ class AppWindow(QMainWindow):
 
         # Lista de cartas selecionadas
         self.selected_cards = []
-        label_selecionadas = QLabel("Cartas Selecionadas para Scrapper:")
+        label_selecionadas = QLabel("Cartas Selecionadas para Radar:")
         layout.addWidget(label_selecionadas)
 
         self.list_selected_cards = QListWidget()
         layout.addWidget(self.list_selected_cards)
 
-        botao_criar_scrapper = QPushButton("Criar arquivo Scrapper ")
+        botao_criar_scrapper = QPushButton("Criar arquivo de Radar ")
         botao_criar_scrapper.setIcon(self.style().standardIcon(QStyle.SP_DialogSaveButton))
-        botao_criar_scrapper.setToolTip("Gera um arquivo para Scrapper, usando as cartas selecionadas")
+        botao_criar_scrapper.setToolTip("Gera um arquivo para o Radar, usando as cartas selecionadas")
         botao_criar_scrapper.clicked.connect(self.on_criar_scrapper_csv)
-        layout.addWidget(botao_criar_scrapper)
+        row_buttons = QHBoxLayout()
+        row_buttons.addWidget(botao_criar_scrapper)
+
+        botao_remover_carta = QPushButton("Remover Selecionada")
+        botao_remover_carta.setIcon(self.style().standardIcon(QStyle.SP_TrashIcon))
+        botao_remover_carta.setToolTip("Remove a carta selecionada da lista de Radar")
+        botao_remover_carta.clicked.connect(self.on_remover_carta_selecionada)
+        row_buttons.addWidget(botao_remover_carta)
+
+        layout.addLayout(row_buttons)
+
 
         layout.addStretch()
 
@@ -935,11 +959,11 @@ class AppWindow(QMainWindow):
 
         # Carregar CSV de Cartas
         row_cards = QHBoxLayout()
-        label_cards = QLabel("Arquivo Scrapper:")
+        label_cards = QLabel("Arquivo Radar:")
         self.input_file_cards = QLineEdit()
         botao_file_cards = QPushButton("Localizar arquivo")
         botao_file_cards.setIcon(self.style().standardIcon(QStyle.SP_FileDialogStart))
-        botao_file_cards.setToolTip("Selecione o arquivo CSV contendo as cartas que deseja raspar")
+        botao_file_cards.setToolTip("Selecione o arquivo CSV contendo as cartas que deseja Buscar")
         botao_file_cards.clicked.connect(self.on_browse_cards)
 
         self.list_cards = QListWidget()
@@ -966,6 +990,7 @@ class AppWindow(QMainWindow):
             "Nome", "Coleção", "Número", "Cond", "Qtde",
             "Preço", "Total", "Língua"
         ])
+        self.table_results.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table_results.setToolTip("Resultados da raspagem serão exibidos aqui")
 
         row_progress = QHBoxLayout()
@@ -991,7 +1016,7 @@ class AppWindow(QMainWindow):
         row_progress.addStretch()
 
         row_monitor = QHBoxLayout()
-        label_monitor = QLabel("Arquivo Monitor:")
+        label_monitor = QLabel("Arquivo de Monitoramento:")
         self.input_file_monitor = QLineEdit()
         botao_file_monitor = QPushButton("Localizar Arquivo")
         botao_file_monitor.setIcon(self.style().standardIcon(QStyle.SP_FileDialogStart))
@@ -1055,6 +1080,7 @@ class AppWindow(QMainWindow):
         self.table_analise = QTableWidget()
         self.table_analise.setColumnCount(5)
         self.table_analise.setHorizontalHeaderLabels(["Nome","Coleção","Número","Preço","Outros?"])
+        self.table_analise.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table_analise.setToolTip("Resultados de análise, oportunidades, etc")
 
         row_botoes = QHBoxLayout()
@@ -1094,7 +1120,7 @@ class AppWindow(QMainWindow):
         layout = QVBoxLayout(self.tab_orcamento)
 
         label_info = QLabel(
-            "Gere dois arquivos de orçamento (PDF, Excel) com as cartas do arquivo Scrapper.\n"
+            "Gere dois arquivos de orçamento (PDF, Excel) com as cartas do arquivo Radar.\n"
             "Edite quantidade, desconto e gere o arquivo final."
         )
         layout.addWidget(label_info)
@@ -1129,6 +1155,7 @@ class AppWindow(QMainWindow):
             "Nome", "Coleção", "Número", "Preço Unit (R$)",
             "Quantidade", "Desconto (%)", "Preço Final (R$)"
         ])
+        self.table_orcamento.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table_orcamento.setEditTriggers(QAbstractItemView.AllEditTriggers)
         self.table_orcamento.setToolTip("Edite as quantidades e descontos individualmente")
 
@@ -1279,16 +1306,17 @@ class AppWindow(QMainWindow):
                 border: 1px solid #555555;
                 font-size: 12pt;
             }
-            QPushButton {
-                background-color: #444444;
-                color: #ffffff;
-                border: 1px solid #666666;
-                padding: 5px;
-                font-size: 12pt;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: #555555;
+            QQPushButton {
+            background-color: #444444;
+            color: #ffffff;
+            border: 1px solid #666666;
+            padding: 6px;
+            border-radius: 6px;
+        }
+        QPushButton:hover {
+            background-color: #666666;
+            font-weight: bold;
+        }
             }
             QTabWidget::pane {
                 border: 1px solid #555555;
@@ -1306,15 +1334,21 @@ class AppWindow(QMainWindow):
                 font-weight: bold;
             }
             QTableWidget QHeaderView::section {
-                background-color: #444444;
-                color: #e0e0e0;
-                border: 1px solid #555555;
-                font-size: 12pt;
-            }
-            QToolTip {
-                background-color: #1a1a1a;
+                background-color: #444;
                 color: #ffffff;
-                border: 1px solid #333333;
+                font-weight: bold;
+                padding: 6px;
+            }
+
+            QToolTip {
+                background-color: #2a2a2a;
+                color: #00FFAA;
+                border: 1px solid #555;
+                font-size: 11pt;
+            }
+
+            QTableWidget::item:hover {
+                background-color: #505050;
             }
         """
         self.setStyleSheet(estilo_escuro)
@@ -1369,10 +1403,12 @@ class AppWindow(QMainWindow):
                 font-size: 12pt;
             }
             QToolTip {
-                background-color: #f9f9f9;
-                color: #333333;
-                border: 1px solid #bbbbbb;
-            }
+    background-color: #2a2a2a;
+    color: #00FFAA;
+    border: 1px solid #555;
+    font-size: 11pt;
+}
+
         """
         self.setStyleSheet(estilo_claro)
 
@@ -1456,6 +1492,32 @@ class AppWindow(QMainWindow):
             self.cards_has_more = False
         finally:
             self.cards_loading = False
+            
+    
+    def on_remover_carta_selecionada(self):
+        selected_item = self.list_selected_cards.currentItem()
+        if not selected_item:
+            self.log("Nenhuma carta selecionada para remover.")
+            return
+
+        texto = selected_item.text()
+        nome, colecao, numero = [part.strip() for part in texto.split("|")]
+
+        # Remove da lista visual
+        self.list_selected_cards.takeItem(self.list_selected_cards.row(selected_item))
+
+        # Remove da lista interna
+        self.selected_cards = [
+            c for c in self.selected_cards
+            if not (
+                c.get("name", "") == nome and
+                c.get("set", {}).get("ptcgoCode", "") == colecao and
+                c.get("number", "") == numero
+            )
+        ]
+
+        self.log(f"Carta removida: {nome} ({colecao} - {numero})")
+
 
 
 
@@ -1599,7 +1661,7 @@ class AppWindow(QMainWindow):
 
             btn_add = QPushButton("Adicionar")
             btn_add.setIcon(self.style().standardIcon(QStyle.SP_ArrowRight))
-            btn_add.clicked.connect(lambda _, c=card: self.on_adicionar_carta(c))
+            btn_add.clicked.connect(lambda _, c=card, w=frame_card: self.on_adicionar_carta(c, w))
             layout_vertical.addWidget(btn_add)
 
             self.grid_mosaico.addWidget(frame_card, row, col)
@@ -1608,7 +1670,7 @@ class AppWindow(QMainWindow):
                 col = 0
                 row += 1
 
-    def on_adicionar_carta(self, card):
+    def on_adicionar_carta(self, card, widget_frame=None):
         nome = card.get("name", "")
         numero = card.get("number", "")
         set_obj = card.get("set", {})
@@ -1623,10 +1685,14 @@ class AppWindow(QMainWindow):
 
         self.selected_cards.append(card)
         self.list_selected_cards.addItem(f"{nome} | {colecao_sigla} | {numero}")
+        
+        if widget_frame:
+            self.animar_pop_widget(widget_frame)
+
 
     def on_criar_scrapper_csv(self):
         if not self.selected_cards:
-            self.log("Nenhuma carta selecionada para criar CSV de Scrapper.")
+            self.log("Nenhuma carta selecionada para criar CSV de Radar.")
             return
 
         csv_path = os.path.join(config.OUTPUT_FOLDER, "cartas_para_scrapper.csv")
@@ -2079,6 +2145,7 @@ class AppWindow(QMainWindow):
             for col, val in enumerate(valores):
                 item_table = QTableWidgetItem(val)
                 self.table_results.setItem(row_idx, col, item_table)
+                
 
     def mostra_analise_tabela(self, df):
         self.table_analise.setRowCount(0)
@@ -2122,7 +2189,29 @@ class AppWindow(QMainWindow):
 
     def append_log(self, text):
         """Exibe mensagens no painel de logs."""
-        self.txt_logs.append(text)
+        self.txt_logs.append(text)        
+    
+    def animar_pop_widget(self, widget):
+        rect_original = widget.geometry()
+        rect_maior = QRect(
+            rect_original.x() - 10,
+            rect_original.y() - 15,
+            rect_original.width() + 20,
+            rect_original.height() + 30
+        )
+
+        anim = QPropertyAnimation(widget, b"geometry")
+        anim.setDuration(200)
+        anim.setStartValue(rect_original)
+        anim.setKeyValueAt(0.5, rect_maior)
+        anim.setEndValue(rect_original)
+        anim.setEasingCurve(QEasingCurve.OutBounce)
+        anim.start()
+        
+        # Impede GC coletar a animação antes de terminar
+        widget._animacao_temporaria = anim
+
+
 
     def log(self, text):
         """Método para gerar logs vindos de threads."""
