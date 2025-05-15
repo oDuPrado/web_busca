@@ -120,7 +120,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QListWidget, QTableWidget, QTableWidgetItem, QProgressBar,
     QFileDialog, QTextEdit, QSpinBox, QSlider, QAbstractItemView,
-    QScrollArea, QGridLayout, QFrame, QToolTip, QToolButton, QComboBox,QHeaderView
+    QScrollArea, QGridLayout, QFrame, QToolTip, QToolButton, QComboBox,QHeaderView,QMessageBox
 )
 from PyQt5.QtCore import (
     Qt, QTimer, pyqtSignal, QObject, QSize, QPropertyAnimation,
@@ -1782,6 +1782,22 @@ class AppWindow(QMainWindow):
             self.btn_pausar.setText("Pausar")
             self.btn_pausar.setIcon(self.style().standardIcon(QStyle.SP_MediaPause))
             self.log("Monitoramento retomado.")
+            
+    def mostrar_alerta(self, titulo: str, mensagem: str, tipo="info"):
+        msg_box = QMessageBox()
+        if tipo == "info":
+            msg_box.setIcon(QMessageBox.Information)
+        elif tipo == "aviso":
+            msg_box.setIcon(QMessageBox.Warning)
+        elif tipo == "erro":
+            msg_box.setIcon(QMessageBox.Critical)
+        else:
+            msg_box.setIcon(QMessageBox.NoIcon)
+
+        msg_box.setWindowTitle(titulo)
+        msg_box.setText(mensagem)
+        msg_box.setStandardButtons(QMessageBox.Ok)
+        msg_box.exec_()
 
     def loop_monitor(self):
         while self.monitor_running:
@@ -2191,26 +2207,36 @@ class AppWindow(QMainWindow):
     def on_start_url_monitoring(self):
         urls = monitor_lp.get_all_urls()
         if not urls:
-            self.log("Nenhuma URL cadastrada.")
+            self.mostrar_alerta("Nenhuma URL", "Você precisa cadastrar pelo menos uma URL antes de iniciar o monitoramento.", tipo="aviso")
             return
+
         if self.url_monitor_running:
+            self.mostrar_alerta("Monitor Ativo", "O monitoramento já está em execução.", tipo="info")
             return
+
         self.url_monitor_running = True
         self.btn_start_urls.setEnabled(False)
         self.btn_stop_urls.setEnabled(True)
+
+        self.mostrar_alerta("Monitor Iniciado", f"Monitoramento iniciado com {len(urls)} URLs.", tipo="info")
         self.log("Monitor de URLs iniciado.")
         self.url_monitor_thread = threading.Thread(
             target=self._url_monitor_loop, daemon=True
         )
         self.url_monitor_thread.start()
 
+
     def on_stop_url_monitoring(self):
         if not self.url_monitor_running:
+            self.mostrar_alerta("Monitor Inativo", "O monitoramento já está parado.", tipo="info")
             return
+
         self.url_monitor_running = False
         self.btn_start_urls.setEnabled(True)
         self.btn_stop_urls.setEnabled(False)
+        self.mostrar_alerta("Monitor Parado", "O monitoramento foi interrompido.", tipo="info")
         self.log("Monitor de URLs parado.")
+
 
     # ---------------------------------------------------------------------
     # 1)  Laço principal de monitoramento de URLs
