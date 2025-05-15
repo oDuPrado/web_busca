@@ -8,6 +8,7 @@ import zipfile
 import requests
 import shutil
 import sys 
+from typing import List
 
 def get_chromedriver_path():
     """Retorna o caminho correto do ChromeDriver dentro da pasta do executável."""
@@ -107,6 +108,7 @@ import os
 import time
 import random
 import requests
+import traceback
 from datetime import datetime
 import threading
 import base64
@@ -118,7 +120,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QListWidget, QTableWidget, QTableWidgetItem, QProgressBar,
     QFileDialog, QTextEdit, QSpinBox, QSlider, QAbstractItemView,
-    QScrollArea, QGridLayout, QFrame, QToolTip, QToolButton, QComboBox
+    QScrollArea, QGridLayout, QFrame, QToolTip, QToolButton, QComboBox,QHeaderView
 )
 from PyQt5.QtCore import (
     Qt, QTimer, pyqtSignal, QObject, QSize, QPropertyAnimation,
@@ -126,6 +128,9 @@ from PyQt5.QtCore import (
 )
 from PyQt5.QtGui import QPixmap, QIcon
 from selenium.common.exceptions import NoAlertPresentException
+import threading, time
+from datetime import datetime
+from monitor_lp import send_message, get_last_price, update_price,format_price_alert
 
 # --------------------------------------------------------------------------------
 # CONFIG (simples, você pode colocar em config.py separado)
@@ -155,6 +160,15 @@ class Config:
 
 config = Config()
 
+
+# --------------------------------------------------------------------------------
+# BANCO DE DADOS SQLite para URLs de monitoramento
+# --------------------------------------------------------------------------------
+import monitor_lp
+
+# Inicia a DB (cria tabela se necessário)
+monitor_lp.init_db()
+
 # --------------------------------------------------------------------------------
 # DADOS (funções de csv, pdf, excel)
 # --------------------------------------------------------------------------------
@@ -167,6 +181,16 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 import xlsxwriter
+
+
+def init_db(): ...
+def add_urls(urls: List[str]): ...
+def get_all_urls() -> List[str]: ...
+def update_price(url: str, price: float): ...
+def get_last_price(url: str) -> float: ...
+def delete_url(url: str): ...
+def edit_url(old_url: str, new_url: str): ...
+
 
 def carrega_lista_cards(caminho_csv, config_obj):
     try:
@@ -739,6 +763,14 @@ class AppWindow(QMainWindow):
 
         # Guarda se estamos em modo escuro ou claro
         self.modo_escuro = True
+        
+         # Carrega lista de URLs do banco
+        self.urls = monitor_lp.get_all_urls()
+        
+        # Controle do monitor de URLs
+        self.url_monitor_running = False
+        self.url_monitor_thread  = None
+        self.url_monitor_interval = 60  # segundos entre ciclos
 
         # ---------- CRIAÇÃO DAS ABAS ----------
         self.tabs = QTabWidget()
@@ -761,6 +793,10 @@ class AppWindow(QMainWindow):
 
         self.tab_orcamento = QWidget()
         self.tabs.addTab(self.tab_orcamento, "Orçamento")
+        
+        self.tab_urls = QWidget()
+        self.tabs.addTab(self.tab_urls, "URLs")
+        self.setup_tab_urls()
 
         # Constrói cada aba (layouts e widgets)
         self.setup_tab_cartas()
@@ -1115,6 +1151,74 @@ class AppWindow(QMainWindow):
 
         layout.addWidget(self.btn_gerar_orcamento)
         layout.addStretch()
+        
+    # --------------------------------------------------------------------------------
+    # ABA 5 - URLs
+    # --------------------------------------------------------------------------------
+    def setup_tab_urls(self):
+        layout = QVBoxLayout(self.tab_urls)
+
+        # ——— Gerenciamento de URLs ———
+        row_urls = QHBoxLayout()
+        self.input_new_url = QLineEdit()
+        self.input_new_url.setPlaceholderText("Cole aqui a URL do produto...")
+        btn_add_url = QPushButton("Adicionar URL")
+        btn_add_url.clicked.connect(self.on_add_url)
+        btn_edit_url = QPushButton("Editar URL")
+        btn_edit_url.clicked.connect(self.on_edit_url)
+        btn_delete_url = QPushButton("Excluir URL")
+        btn_delete_url.clicked.connect(self.on_delete_url)
+
+        for w in (self.input_new_url, btn_add_url, btn_edit_url, btn_delete_url):
+            row_urls.addWidget(w)
+        layout.addLayout(row_urls)
+
+        # Lista de URLs cadastradas
+        layout.addWidget(QLabel("URLs em monitoramento:"))
+        self.list_urls = QListWidget()
+        layout.addWidget(self.list_urls)
+        self.refresh_url_list()
+
+        # ——— Controles de execução ———
+        row_ctrl = QHBoxLayout()
+        self.btn_start_urls = QPushButton("Iniciar Monitor URLs")
+        self.btn_start_urls.clicked.connect(self.on_start_url_monitoring)
+        self.btn_stop_urls  = QPushButton("Parar Monitor URLs")
+        self.btn_stop_urls.setEnabled(False)
+        self.btn_stop_urls.clicked.connect(self.on_stop_url_monitoring)
+        row_ctrl.addWidget(self.btn_start_urls)
+        row_ctrl.addWidget(self.btn_stop_urls)
+        row_ctrl.addStretch()
+        layout.addLayout(row_ctrl)
+
+        # ——— Estatísticas rápidas ———
+        row_stats = QHBoxLayout()
+        self.lbl_total_urls  = QLabel("Total: 0")
+        self.lbl_processed   = QLabel("Processados: 0")
+        self.lbl_remaining   = QLabel("Restantes: 0")
+        row_stats.addWidget(self.lbl_total_urls)
+        row_stats.addSpacing(20)
+        row_stats.addWidget(self.lbl_processed)
+        row_stats.addSpacing(20)
+        row_stats.addWidget(self.lbl_remaining)
+        row_stats.addStretch()
+        layout.addLayout(row_stats)
+        
+        # ——— Tabela de status ———
+        self.table_url_status = QTableWidget()
+        self.table_url_status.setColumnCount(5)
+        self.table_url_status.setHorizontalHeaderLabels(["Produto", "URL", "Preço", "Último Check", "Status"])
+        self.table_url_status.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table_url_status.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table_url_status.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table_url_status.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(self.table_url_status)
+        self.table_url_status.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+
+
+        # Init dos contadores
+        self.update_url_stats()
+
 
     # --------------------------------------------------------------------------------
     # MÉTODOS DE TEMA (CLARO/ESCURO) - MELHORADOS
@@ -2007,6 +2111,193 @@ class AppWindow(QMainWindow):
     def log(self, text):
         """Método para gerar logs vindos de threads."""
         self.log_emitter.new_log.emit(text)
+        
+    def update_url_stats(self):
+        urls = monitor_lp.get_all_urls()
+        total = len(urls)
+        self.lbl_total_urls.setText(f"Total: {total}")
+        self.lbl_processed.setText("Processados: 0")
+        self.lbl_remaining.setText(f"Restantes: {total}")
+
+    def _update_url_row(self, url, price, timestamp, status, name=""):
+        from PyQt5.QtWidgets import QTableWidgetItem
+
+        # Verifica se a URL já está na tabela
+        row_found = -1
+        for row in range(self.table_url_status.rowCount()):
+            item = self.table_url_status.item(row, 1)
+            if item and item.text() == url:
+                row_found = row
+                break
+
+        if row_found == -1:
+            row = self.table_url_status.rowCount()
+            self.table_url_status.insertRow(row)
+            self.table_url_status.setItem(row, 0, QTableWidgetItem(name))
+            self.table_url_status.setItem(row, 1, QTableWidgetItem(url))
+        else:
+            row = row_found
+            self.table_url_status.setItem(row, 0, QTableWidgetItem(name))
+
+        preco_str = f"R$ {price:.2f}" if price > 0 else "-"
+        self.table_url_status.setItem(row, 2, QTableWidgetItem(preco_str))
+        self.table_url_status.setItem(row, 3, QTableWidgetItem(timestamp))
+        self.table_url_status.setItem(row, 4, QTableWidgetItem(status))
+
+        print(f"[UI] Linha atualizada: {url} → {preco_str} / {timestamp} / {status}")
+
+    # —————————————————————————————————————
+    # Callbacks para gerenciar URLs no banco
+    # —————————————————————————————————————
+
+    def refresh_url_list(self):
+        """Recarrega a lista de URLs vindo do DB."""
+        self.list_urls.clear()
+        for url in monitor_lp.get_all_urls():
+            self.list_urls.addItem(url)
+
+    def on_add_url(self):
+        url = self.input_new_url.text().strip()
+        if not url:
+            self.log("URL vazia. Nada adicionado.")
+            return
+        monitor_lp.add_urls([url])
+        self.input_new_url.clear()
+        self.refresh_url_list()
+        self.log(f"URL adicionada: {url}")
+
+    def on_delete_url(self):
+        item = self.list_urls.currentItem()
+        if not item:
+            self.log("Selecione uma URL para excluir.")
+            return
+        url = item.text()
+        monitor_lp.delete_url(url)
+        self.refresh_url_list()
+        self.log(f"URL excluída: {url}")
+
+    def on_edit_url(self):
+        item = self.list_urls.currentItem()
+        novo = self.input_new_url.text().strip()
+        if not item or not novo:
+            self.log("Selecione uma URL e informe o novo valor.")
+            return
+        antigo = item.text()
+        monitor_lp.edit_url(antigo, novo)
+        self.input_new_url.clear()
+        self.refresh_url_list()
+        self.log(f"URL alterada:\n  {antigo}\n→ {novo}")
+    
+    def on_start_url_monitoring(self):
+        urls = monitor_lp.get_all_urls()
+        if not urls:
+            self.log("Nenhuma URL cadastrada.")
+            return
+        if self.url_monitor_running:
+            return
+        self.url_monitor_running = True
+        self.btn_start_urls.setEnabled(False)
+        self.btn_stop_urls.setEnabled(True)
+        self.log("Monitor de URLs iniciado.")
+        self.url_monitor_thread = threading.Thread(
+            target=self._url_monitor_loop, daemon=True
+        )
+        self.url_monitor_thread.start()
+
+    def on_stop_url_monitoring(self):
+        if not self.url_monitor_running:
+            return
+        self.url_monitor_running = False
+        self.btn_start_urls.setEnabled(True)
+        self.btn_stop_urls.setEnabled(False)
+        self.log("Monitor de URLs parado.")
+
+    # ---------------------------------------------------------------------
+    # 1)  Laço principal de monitoramento de URLs
+    # ---------------------------------------------------------------------
+    def _url_monitor_loop(self):
+
+        from monitor_lp import get_last_price, update_price, format_price_alert, send_message
+
+        while self.url_monitor_running:
+            urls   = monitor_lp.get_all_urls() or []
+            total  = len(urls)
+
+            for idx, url in enumerate(urls):
+                if not self.url_monitor_running:
+                    break
+
+                # ── CAPTURA PREÇO + QTD + NOME ────────────────────────────
+                result = self.fetch_price_from_url(url)
+                ts     = datetime.now().strftime("%d/%m/%Y %H:%M")
+
+                if result is None:
+                    self._update_url_row(url, 0.0, ts, "Erro")
+                    continue
+
+                price, qty, name = result
+                self._update_url_row(url, price, ts,"✔️ Atualizado",name)
+
+                # ── LÓGICA DE ALERTA / DB ─────────────────────────────────
+                last_price = get_last_price(url)
+
+                if last_price == 0 or price < last_price:
+                    msg = format_price_alert(name, url, price, last_price, qty)
+                    send_message(msg)
+                    update_price(url, price)
+                    status = "↓ Novo menor"
+                else:
+                    update_price(url, last_price)   # só carimba timestamp
+                    status = "✔️ Sem mudança"
+
+                self.log(f"[URL] {url[-30:]} → R$ {price:.2f} ({status})")
+
+                # ── UI: contadores & pausa curta ─────────────────────────
+                self.lbl_processed.setText(f"Processados: {idx+1}")
+                self.lbl_remaining.setText(f"Restantes: {total-idx-1}")
+                time.sleep(1)                      # espera curta entre URLs
+
+            # — ciclo completo acabou —
+            self.lbl_processed.setText("Processados: 0")
+            self.lbl_remaining.setText(f"Restantes: {total}")
+
+            for _ in range(self.url_monitor_interval):
+                if not self.url_monitor_running:
+                    break
+                time.sleep(1)
+
+        self.log("Loop de monitoramento de URLs encerrado.")
+
+
+    # ---------------------------------------------------------------------
+    # 2)  Função que faz a captura individual (preço, qtd, nome)
+    # ---------------------------------------------------------------------
+    def fetch_price_from_url(self, url: str):
+        """
+        Retorna (price: float, qty: int, name: str) ou None em caso de erro.
+        Nenhum alerta é disparado aqui – fica a cargo do loop.
+        """
+        from monitor_lp import make_driver, capture_price
+
+        self.log(f"[URL] Capturando preço: {url}")
+        driver = make_driver()
+        try:
+            result = capture_price(driver, url)   # (price, qty, name) ou None
+            if result is None:
+                self.log("[ERRO] capture_price retornou None.")
+                return None
+            return result
+        except Exception as e:
+            self.log(f"[ERRO] Exceção em fetch_price_from_url: {e}")
+            return None
+        finally:
+            driver.quit()
+
+
+
+
+    # —————————————————————————————————————
+    # Callbacks para gerenciar URLs no banco
 
     def monitor_cronometro_tick(self):
         self.lbl_check_count.setText(str(self.monitor_check_count))

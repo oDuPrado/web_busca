@@ -76,6 +76,17 @@ def send_message(msg: str, *, parse_html=True):
         if parse_html:
             payload["parse_mode"] = "HTML"
         _post("sendMessage", payload)
+        
+def format_price_alert(product_name: str, url: str, new_price: float, last_price: float, qty: int) -> str:
+    return (
+        f"📉 <b>Alerta de Queda de Preço – Liga Pokémon</b>\n"
+        f"🏷️ <b>{product_name}</b>\n\n"
+        f"💰 <u>Preço caiu!</u>\n"
+        f"• De: <s>R$ {last_price:,.2f}</s>\n"
+        f"• Para: <b>R$ {new_price:,.2f}</b>\n\n"
+        f"📦 <b>Disponível:</b> {qty} unidade(s)\n"
+        f"🔗 <a href=\"{url}\">Acesse o produto</a>"
+    )
 
 def notify_error(ctx: str, err: Exception):
     tb = traceback.format_exception_only(type(err), err)
@@ -320,14 +331,7 @@ def worker(url: str):
                 print(f"[{product_name}] atual R$ {new_price:.2f} | último R$ {last_price:.2f} | estoque {available_qty}")
 
                 if last_price == 0 or new_price < last_price:
-                    msg = (
-                        f"🔻 <b>Ligapokemon – Queda de preço</b>\n"
-                        f"<b>{product_name}</b>\n"
-                        f"De <s>R$ {last_price:,.2f}</s>\n"
-                        f"➡️ <b>R$ {new_price:,.2f}</b>\n"
-                        f"📦 Estoque disponível: {available_qty} un.\n"
-                        f"🔗 <a href=\"{url}\">Ver no site</a>"
-                    )
+                    msg =format_price_alert(product_name, url, new_price, last_price, available_qty)
                     send_message(msg)
                     update_price(url, new_price)
                 else:
@@ -372,5 +376,6 @@ def main():
     except KeyboardInterrupt:
         print("Encerrando...")
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()
+
